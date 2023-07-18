@@ -57,7 +57,7 @@ class AudioEncoderMFCCHU(nn.Module):
         self.emb_dim = emb_dim
         self.dropout = dropout
         self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*4, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout)
-        self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=None)
+        self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=nn.LayerNorm(emb_dim))
         
         self.norm_feats = nn.LayerNorm(raw_features_size)
 

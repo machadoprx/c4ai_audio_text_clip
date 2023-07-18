@@ -3,7 +3,7 @@ import torch
 import torchaudio
 import numpy as np
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 from joblib import Parallel, delayed
 
 sample_rate = 16000
@@ -76,12 +76,12 @@ class AudioEncoderMFCCHUTokenizer(object):
         
         return concat
     
-    def cache_dataset(self, paths: str, set_distribution: bool = True, n_jobs: int = 12):
+    def cache_dataset(self, paths: List[str], set_distribution: bool = True, n_jobs: int = 12):
         X = Parallel(n_jobs=n_jobs)(delayed(self.mfcc_feature_loader)(x) for x in paths)
         X = torch.cat(X, dim=0)
         if set_distribution:
-            self.mean = X.mean(dim=0).cuda()
-            self.std = X.std(dim=0).cuda()
+            self.mean = X.mean(dim=0)
+            self.std = X.std(dim=0)
 
     def mfcc_feature_loader(self,
                             path: str):
@@ -89,7 +89,7 @@ class AudioEncoderMFCCHUTokenizer(object):
         hashed_path = self.cache_path + '/' + f"{hashed_name}.bin"
         with torch.no_grad():
             if os.path.isfile(hashed_path):
-                return torch.load(hashed_path)
+                return torch.load(hashed_path, map_location='cpu')
             else:
                 waveform, sample_rate = torchaudio.load(path, normalize=True, channels_first=True)
                 waveform = waveform.float()
@@ -101,7 +101,7 @@ class AudioEncoderMFCCHUTokenizer(object):
                     transform = torchaudio.transforms.Resample(sample_rate, self.mfcc_params["sample_frequency"])
                     waveform = transform(waveform)
 
-                mfcc = self._get_mfcc_feats(waveform, self.max_pool_window_size, self.mfcc_params, self.pitch_params)
+                mfcc = self._get_mfcc_feats(waveform)
                 torch.save(mfcc, hashed_path)
                 return mfcc
     
