@@ -7,8 +7,6 @@ class AudioTextContrastive(nn.Module):
     def __init__(self, 
                  text_encoder, 
                  audio_encoder, 
-                 freeze_text_enc=False, 
-                 freeze_audio_enc=False, 
                  in_features_text=384, 
                  in_features_audio=16, 
                  wide_proj=1024, 
@@ -20,20 +18,36 @@ class AudioTextContrastive(nn.Module):
         self.audio_encoder = audio_encoder
         self.text_encoder = text_encoder
 
-        if freeze_text_enc:
-            for param in list(self.text_encoder.parameters()):
-                param.requires_grad = False
-            
-        if freeze_audio_enc:
-            for param in list(self.audio_encoder.parameters()):
-                param.requires_grad = False
+        self.mods_proj = nn.Sequential(
+            nn.Dropout(p=rate), 
+            nn.Linear(wide_proj, wide_proj), 
+            nn.GELU(), 
+            nn.Linear(wide_proj, wide_proj)
+        )
 
-        self.mods_proj = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.GELU(), nn.Dropout(p=rate), nn.Linear(hidden_size, wide_proj))
-        self.text_proj = nn.Sequential(self.text_encoder, nn.Linear(in_features_text, hidden_size),  nn.GELU(), nn.Dropout(p=rate), nn.Linear(hidden_size, hidden_size), nn.GELU(), self.mods_proj)
-        self.audio_proj = nn.Sequential(nn.Linear(in_features_audio, hidden_size), nn.GELU(), nn.Dropout(p=rate), nn.Linear(hidden_size, hidden_size), nn.GELU(), self.mods_proj)
+        self.text_proj = nn.Sequential(
+            self.text_encoder, 
+            nn.Linear(in_features_text, hidden_size),  
+            nn.GELU(), 
+            nn.Linear(hidden_size, wide_proj),
+            self.mods_proj,
+        )
+
+        self.audio_proj = nn.Sequential(
+            nn.Linear(in_features_audio, hidden_size), 
+            nn.GELU(), 
+            nn.Linear(hidden_size, wide_proj),
+            self.mods_proj,
+        )
+
         self.linear = nn.Linear(wide_proj, proj_size, bias=False)
         
-        self.alpha = nn.Sequential(nn.Linear(wide_proj, wide_proj), nn.Dropout(p=rate), nn.Linear(wide_proj, 1))
+        self.alpha = nn.Sequential(
+            nn.Dropout(p=rate),
+            nn.Linear(wide_proj, wide_proj), 
+            nn.GELU(),
+            nn.Linear(wide_proj, 1)
+        )
         
         self.rate = rate
         
