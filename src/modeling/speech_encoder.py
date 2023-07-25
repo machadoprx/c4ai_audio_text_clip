@@ -76,7 +76,7 @@ class AudioEncoderMFCCHU(nn.Module):
                  emb_dim=768, 
                  n_layers=6, 
                  max_length=800,
-                 raw_features_size=45,
+                 raw_features_size=384,
                  nheads=8, 
                  dropout=0.2,
                  pos_enc_drop=0.1,

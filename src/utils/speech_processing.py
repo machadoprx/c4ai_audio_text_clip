@@ -5,86 +5,96 @@ import numpy as np
 import os
 from typing import Dict, Any, List
 from joblib import Parallel, delayed
+import librosa
 
-sample_rate = 16000
-n_fft = 400.0
-frame_length = n_fft / sample_rate * 1000.0
-frame_shift = frame_length / 2.0
-
-DEFAULT_MFCC_PARAMS = {
-    "channel": 0,
-    "dither": 0.0,
-    "window_type": "hanning",
-    "frame_length": frame_length,
-    "frame_shift": frame_shift,
-    "remove_dc_offset": False,
-    "round_to_power_of_two": False,
-    "sample_frequency": sample_rate,
-}
-
-DEFAULT_PITCH_PARAMS = {
-    "frame_length": frame_length,
-    "frame_shift": frame_shift,
-    "sample_rate": sample_rate,
+DEFAULT_FEATURES_PARAMS = {
+    "n_fft": 1024,
+    "sample_rate": 16000,
+    "n_mels": 128,
+    "n_harmonics": 115,
 }
 
 class AudioEncoderMFCCHUTokenizer(object):
     
     def __init__(self, 
-                 max_length: int = 128,
-                 max_pool_window_size: int = 4,
-                 mfcc_params: Dict[str, Any] = DEFAULT_MFCC_PARAMS, 
-                 pitch_params: Dict[str, int] = DEFAULT_PITCH_PARAMS,
-                 cache_path: str = "./preprocessed_audio_cache_new"):
+                 max_length: int = 256,
+                 params: Dict[str, Any] = DEFAULT_FEATURES_PARAMS, 
+                 cache_path: str = "./audio_features_cache"):
         
         self.max_length = max_length
-        self.mfcc_params = mfcc_params
-        self.pitch_params = pitch_params
+        self.params = params
         self.cache_path = cache_path
-        self.max_pool_window_size = max_pool_window_size
         self.mean = None
         self.std = None
     
-    def _get_mfcc_feats(self, x):
-        pitch = torchaudio.functional.compute_kaldi_pitch(x, **self.pitch_params).squeeze(dim=0)
+    def compute_speech_features(self, x):
         
-        x = x.view(1, -1)
+        x = librosa.effects.preemphasis(x)
 
-        mfccs = torchaudio.compliance.kaldi.mfcc(
-            x,
-            **self.mfcc_params
-        )  # (time, freq)
-        
-        try:
-            mfccs = torch.cat([mfccs, pitch], dim=-1)
-        except:
-            mfccs = torch.cat([mfccs, torch.Tensor(np.zeros((mfccs.shape[0], 2)))], dim=-1)
-        
-        mfccs_z = torch.Tensor(np.zeros(((mfccs.shape[0] // self.max_pool_window_size) + 1, mfccs.shape[1])))
-        
-        for i in range(len(mfccs) // self.max_pool_window_size): # Max pooling over time to reduce sequence size
-            mfcc_win = mfccs[i * self.max_pool_window_size:(i + 1) * self.max_pool_window_size]
-            norms = [np.linalg.norm(v[:-2]) for v in mfcc_win]
-            argmax = np.argmax(np.array(norms))
-            mfccs_z[i] = mfcc_win[argmax]
-                
-        mfccs = mfccs_z.transpose(0, 1)  # (freq, time)
-        deltas = torchaudio.functional.compute_deltas(mfccs)
-        ddeltas = torchaudio.functional.compute_deltas(deltas)
-        concat = torch.cat([mfccs, deltas, ddeltas], dim=0)
-        concat = concat.transpose(0, 1).contiguous()
-        
-        return concat
+        mfcc = librosa.feature.mfcc(
+            y=x, 
+            n_fft=self.params["n_fft"], 
+            sr=self.params["sample_rate"], 
+            n_mfcc=13, 
+            dct_type=2, 
+            win_length=self.params["n_fft"], 
+            hop_length=self.params["n_fft"] // 2, 
+            norm='ortho', 
+            lifter=22.0, 
+            n_mels=self.params["n_mels"], 
+            center=True, 
+            fmin=20.0, 
+            fmax=self.params["sample_rate"] / 2.0,
+            window='hann',
+        )
+
+        f0, _, _ = librosa.pyin(
+            y=x, 
+            sr=self.params["sample_rate"], 
+            fmin=librosa.note_to_hz('C2'), 
+            fmax=librosa.note_to_hz('C7'), 
+            frame_length=self.params["n_fft"], 
+            hop_length=self.params["n_fft"] // 2,
+            win_length=self.params["n_fft"] // 4,
+            center=True
+        )
+
+        S = np.abs(
+            librosa.stft(
+                x, 
+                n_fft=self.params["n_fft"], 
+                hop_length=self.params["n_fft"] // 2, 
+                win_length=self.params["n_fft"], 
+                window='hann', 
+                center=True
+            )
+        )
+
+        harmonics = np.arange(1, self.params["n_harmonics"] + 1)
+        frequencies = librosa.fft_frequencies(sr=self.params["sample_rate"], n_fft=self.params["n_fft"])
+        harmonic_energy = librosa.f0_harmonics(S, f0=f0, harmonics=harmonics, freqs=frequencies)
+
+        with torch.no_grad():
+            feats = torch.cat([torch.from_numpy(mfcc), torch.from_numpy(harmonic_energy)], dim=0)
+            deltas = torchaudio.functional.compute_deltas(feats)
+            ddeltas = torchaudio.functional.compute_deltas(deltas)
+
+            feats_with_deltas = torch.cat([feats, deltas, ddeltas], dim=0)
+            feats_with_deltas = feats_with_deltas.transpose(0, 1).contiguous()
+            
+            return feats_with_deltas
     
     def cache_dataset(self, paths: List[str], set_distribution: bool = True, n_jobs: int = 12):
-        X = Parallel(n_jobs=n_jobs)(delayed(self.mfcc_feature_loader)(x) for x in paths)
+        X = Parallel(n_jobs=n_jobs)(delayed(self.get_features)(x) for x in paths)
+        lens = [x.shape[0] for x in X]
+
         X = torch.cat(X, dim=0)
         if set_distribution:
             self.mean = X.mean(dim=0)
             self.std = X.std(dim=0)
+        return X, lens
 
-    def mfcc_feature_loader(self,
-                            path: str):
+    def get_features(self, path: str):
         hashed_name = hashlib.md5(path.encode('utf-8')).hexdigest()
         hashed_path = self.cache_path + '/' + f"{hashed_name}.bin"
         with torch.no_grad():
@@ -97,39 +107,41 @@ class AudioEncoderMFCCHUTokenizer(object):
                 if len(waveform.shape) == 2:
                     waveform = torch.mean(waveform, dim=0).unsqueeze(dim=0)
 
-                if sample_rate != self.mfcc_params["sample_frequency"]:
-                    transform = torchaudio.transforms.Resample(sample_rate, self.mfcc_params["sample_frequency"])
+                if sample_rate != self.params["sample_rate"]:
+                    transform = torchaudio.transforms.Resample(sample_rate, self.params["sample_rate"])
                     waveform = transform(waveform)
 
-                mfcc = self._get_mfcc_feats(waveform)
-                torch.save(mfcc, hashed_path)
-                return mfcc
+                feats = self.compute_speech_features(waveform.numpy()[0])
+                torch.save(feats, hashed_path)
+                return feats
     
+    def pad_features(self, x):
+        l = len(x)
+        att_mask = torch.ones((self.max_length, 1))
+
+        if l > self.max_length:
+            x = x[:self.max_length]
+        elif l < self.max_length:
+            mask_idx = torch.Tensor([i + l for i in range(self.max_length - l)]).long()
+            att_mask = att_mask.index_fill_(0, mask_idx, 0.0)
+            repeat = torch.zeros((self.max_length - l, x.shape[1]))
+            x = torch.cat([x, repeat], dim=0)
+
+        x = x.unsqueeze(dim=0)
+        att_mask = att_mask.unsqueeze(dim=0).squeeze(dim=-1)
+        return x, att_mask
+
     def tokenize(self, path: str):
         assert self.mean != None and self.std != None
-
         with torch.no_grad():
-            mfcc = (self.mfcc_feature_loader(path) - self.mean) / (self.std + 1e-10)
-        
-            l = len(mfcc)
-            att_mask = torch.ones((self.max_length, 1))
-
-            if l > self.max_length:
-                mfcc = mfcc[:self.max_length]
-            elif l < self.max_length:
-                mask_idx = torch.Tensor([i + l for i in range(self.max_length - l)]).long()
-                att_mask = att_mask.index_fill_(0, mask_idx, 0.0)
-                repeat = torch.zeros((self.max_length - l, mfcc.shape[1]))
-                mfcc = torch.cat([mfcc, repeat], dim=0)
-
-            mfcc = mfcc.unsqueeze(dim=0)
-            att_mask = att_mask.unsqueeze(dim=0).squeeze(dim=-1)
-            return mfcc, att_mask
+            x = (self.get_features(path) - self.mean) / (self.std + 1e-12)
+            x, att_mask = self.pad_features(x)
+            return x, att_mask
     
     def batch_tokenize(self, paths: str, n_jobs: int = 12):
         X = Parallel(n_jobs=n_jobs)(delayed(self.tokenize)(x) for x in paths)
-        mfccs = [m for m, _ in X]
+        X_feats = [m for m, _ in X]
         att_masks = [a for _, a in X]
-        mfccs = torch.cat(mfccs, dim=0)
+        X_feats = torch.cat(X_feats, dim=0)
         att_masks = torch.cat(att_masks, dim=0)
-        return mfccs, att_masks
+        return X_feats, att_masks
