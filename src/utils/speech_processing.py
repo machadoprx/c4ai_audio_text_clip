@@ -132,7 +132,7 @@ class AudioEncoderMFCCHUTokenizer(object):
         return x, att_mask
 
     def tokenize(self, path: str):
-        assert self.mean != None and self.std != None
+        assert self.mean is not None and self.std is not None
         with torch.no_grad():
             x = (self.get_features(path) - self.mean) / (self.std + 1e-12)
             x, att_mask = self.pad_features(x)

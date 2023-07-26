@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import math
-from vector_quantize_pytorch import ResidualVQ
+from vector_quantize_pytorch import ResidualVQ, VectorQuantize
 from torch.nn import functional as F
 
 # Modified for compatibility with TransformerEncoder evaluation forward pass
@@ -89,11 +89,11 @@ class AudioEncoderMFCCHU(nn.Module):
         
         self.max_length = max_length
         
-        self.vq = ResidualVQ(
+        self.vq = VectorQuantize(
             dim = raw_features_size,
             codebook_size = self.vocab_size,
             codebook_dim = codebook_dim,
-            num_quantizers = num_quantizer,
+            #num_quantizers = num_quantizer,
             threshold_ema_dead_code = threshold_ema_dead_code,
         )
             
