@@ -8,7 +8,7 @@ from joblib import Parallel, delayed
 import librosa
 
 DEFAULT_FEATURES_PARAMS = {
-    "n_fft": 1024,
+    "n_fft": 4096,
     "sample_rate": 16000,
     "n_mels": 128,
     "n_harmonics": 115,
@@ -101,17 +101,11 @@ class AudioEncoderMFCCHUTokenizer(object):
             if os.path.isfile(hashed_path):
                 return torch.load(hashed_path, map_location='cpu')
             else:
-                waveform, sample_rate = torchaudio.load(path, normalize=True, channels_first=True)
-                waveform = waveform.float()
-                    
-                if len(waveform.shape) == 2:
-                    waveform = torch.mean(waveform, dim=0).unsqueeze(dim=0)
-
-                if sample_rate != self.params["sample_rate"]:
-                    transform = torchaudio.transforms.Resample(sample_rate, self.params["sample_rate"])
-                    waveform = transform(waveform)
-
-                feats = self.compute_speech_features(waveform.numpy()[0])
+                waveform, _ = librosa.load(path, sr=self.params["sample_rate"], mono=True)
+                min_size_in_ms = self.params["n_fft"]
+                if len(waveform) < min_size_in_ms:
+                    waveform = librosa.util.fix_length(waveform, size=min_size_in_ms)
+                feats = self.compute_speech_features(waveform)
                 torch.save(feats, hashed_path)
                 return feats
     

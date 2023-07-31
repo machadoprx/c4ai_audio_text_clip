@@ -86,39 +86,38 @@ class AudioEncoderMFCCHU(nn.Module):
         super(AudioEncoderMFCCHU, self).__init__()
         
         self.vocab_size = vocab_size
-        
         self.max_length = max_length
         
-        self.vq = VectorQuantize(
+        self.vq = ResidualVQ(
             dim = raw_features_size,
             codebook_size = self.vocab_size,
             codebook_dim = codebook_dim,
-            #num_quantizers = num_quantizer,
+            num_quantizers = num_quantizer,
             threshold_ema_dead_code = threshold_ema_dead_code,
+            kmeans_init = True,
+            kmeans_iters = 10,
+            use_cosine_sim = True,
         )
             
         self.pos_encoder = PositionalEncoding(emb_dim, dropout=pos_enc_drop)
-        self.project = nn.Sequential(nn.Linear(raw_features_size, emb_dim), nn.GELU(), nn.Linear(emb_dim, emb_dim))
-        
+        self.projection = nn.Linear(raw_features_size, emb_dim)
+
+        self.vq_norm = RMSNorm(emb_dim)
+
         self.emb_dim = emb_dim
         self.dropout = dropout
         self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*4, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout, activation=F.gelu)
         self.transf_layer.norm1 = RMSNorm(emb_dim)
         self.transf_layer.norm2 = RMSNorm(emb_dim)
-
         self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=RMSNorm(emb_dim))
-        self.norm_feats = RMSNorm(raw_features_size)
-        self.norm_proj = RMSNorm(emb_dim)
-
 
     def forward(self, features, attn_masks):
         
-        qtz_feats, _, vq_loss = self.vq(features)
-        qtz_feats = qtz_feats + self.norm_feats(qtz_feats)
+        vq, _, vq_loss = self.vq(features)
         vq_loss = vq_loss.mean()
-            
-        x = self.project(qtz_feats)
-        x = x + self.norm_proj(x)
+
+        x = self.projection(vq)
+        x = x + self.vq_norm(x)
         x = self.pos_encoder(x)
 
         x = self.transf_enc(x, src_key_padding_mask=attn_masks)
