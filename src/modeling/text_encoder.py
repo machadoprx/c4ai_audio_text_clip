@@ -11,38 +11,40 @@ def mean_pooling(model_output, attention_mask):
 
 class TextEncoder(torch.nn.Module):
 
-    def __init__(self, model_name: str, max_len: int, extra_tokens: List[str] = None, end_prior_context: str = None, start_future_context: str = None):
+    def __init__(self, model_name: str, max_len: int, extra_tokens: List[str] = None, end_prior_context: str = "[BFRE]", start_future_context: str = "[AFTS]"):
         super(TextEncoder, self).__init__()
 
         self.max_len = max_len
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.end_prior_context = end_prior_context
-        self.start_future_context = start_future_context
+
         if extra_tokens != None:
             _ = self.tokenizer.add_tokens(extra_tokens, special_tokens=True)
+        self.end_prior_context = self.tokenizer.convert_tokens_to_ids(end_prior_context)
+        self.start_future_context = self.tokenizer.convert_tokens_to_ids(start_future_context)
         self.encoder = AutoModel.from_pretrained(model_name)
         self.encoder.resize_token_embeddings(len(self.tokenizer))
  
     def get_context_mask(self, tokenized):
         context_masks = []
         for x, mask in zip(tokenized["input_ids"].numpy(), tokenized["attention_mask"].numpy()):
-            i, j = 0, self.max_len - 1
-            while x[i] != self.end_prior_context and x[j] != self.start_future_context and i < j:
-                if x[i] != self.end_prior_context:
-                    mask[i] = 0.0
-                    i += 1
-                if x[j] != self.start_future_context:
-                    mask[j] = 0.0
-                    j -= 1
-            mask[i] = 0.0
-            mask[j] = 0.0
-            context_masks.append(mask)
+            if self.start_future_context in list(x):
+                i, j = 0, self.max_len - 1
+                while x[i] != self.end_prior_context and x[j] != self.start_future_context and i < j:
+                    if x[i] != self.end_prior_context:
+                        mask[i] = 0.0
+                        i += 1
+                    if x[j] != self.start_future_context:
+                        mask[j] = 0.0
+                        j -= 1
+                mask[i] = 0.0
+                mask[j] = 0.0
+            context_masks.append(np.expand_dims(mask, axis=0))
         return torch.Tensor(np.concatenate(context_masks, axis=0))
 
     def forward(self, sentences):
         
         tokenized = self.tokenizer(sentences, padding='max_length', truncation=True, return_tensors='pt', max_length=self.max_len)
-        context_mask = self.get_context_mask(tokenized).cuda()
+        #ontext_mask = self.get_context_mask(tokenized).cuda()
 
         att_mask = tokenized["attention_mask"].cuda()
         tokenized = {
@@ -50,6 +52,7 @@ class TextEncoder(torch.nn.Module):
             "attention_mask": att_mask
         }
         out = self.encoder(**tokenized)
-        
-        out = mean_pooling(out, context_mask)
+        #print(context_mask.shape)
+        #print(att_mask.shape)
+        out = mean_pooling(out, att_mask)
         return out

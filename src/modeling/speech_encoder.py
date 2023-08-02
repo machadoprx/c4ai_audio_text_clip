@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import math
-from vector_quantize_pytorch import ResidualVQ, VectorQuantize
+from vector_quantize_pytorch import ResidualVQ, GroupedResidualVQ
 from torch.nn import functional as F
 
 # Modified for compatibility with TransformerEncoder evaluation forward pass
@@ -76,48 +76,56 @@ class AudioEncoderMFCCHU(nn.Module):
                  emb_dim=768, 
                  n_layers=6, 
                  max_length=800,
-                 raw_features_size=384,
+                 raw_features_size=53 * 3,
                  nheads=8, 
                  dropout=0.2,
-                 pos_enc_drop=0.1,
-                 codebook_dim=128,
-                 num_quantizer=4,
+                 pos_enc_drop=0.0,
+                 codebook_dim=32,
+                 num_quantizer=2,
                  threshold_ema_dead_code=2):
         super(AudioEncoderMFCCHU, self).__init__()
         
         self.vocab_size = vocab_size
         self.max_length = max_length
         
-        self.vq = ResidualVQ(
+        self.vq = GroupedResidualVQ(
             dim = raw_features_size,
-            codebook_size = self.vocab_size,
+            codebook_size = vocab_size,
             codebook_dim = codebook_dim,
             num_quantizers = num_quantizer,
             threshold_ema_dead_code = threshold_ema_dead_code,
-            kmeans_init = True,
+            kmeans_init = True,   # set to True
             kmeans_iters = 10,
-            use_cosine_sim = True,
+            groups=3,
         )
-            
-        self.pos_encoder = PositionalEncoding(emb_dim, dropout=pos_enc_drop)
-        self.projection = nn.Linear(raw_features_size, emb_dim)
-
-        self.vq_norm = RMSNorm(emb_dim)
-
         self.emb_dim = emb_dim
         self.dropout = dropout
-        self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*4, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout, activation=F.gelu)
+
+        self.pos_encoder = PositionalEncoding(emb_dim, dropout=pos_enc_drop)
+        self.projection_out = nn.Sequential(nn.Linear(raw_features_size, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
+        self.norm_out = RMSNorm(emb_dim)
+
+        self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*2, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout, activation=F.gelu)
         self.transf_layer.norm1 = RMSNorm(emb_dim)
         self.transf_layer.norm2 = RMSNorm(emb_dim)
         self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=RMSNorm(emb_dim))
 
     def forward(self, features, attn_masks):
-        
-        vq, _, vq_loss = self.vq(features)
-        vq_loss = vq_loss.mean()
+        features_x = features[:, :, :128]
+        features_dx = features[:, :, 128:256]
+        features_ddx = features[:, :, 256:384]
 
-        x = self.projection(vq)
-        x = x + self.vq_norm(x)
+        features_x = features_x[:, :, :53]
+        features_dx = features_dx[:, :, :53]
+        features_ddx = features_ddx[:, :, :53]
+
+        features_final = torch.cat([features_x, features_dx, features_ddx], dim=-1)
+        #print
+        x, _, vq_loss = self.vq(features_final)
+        vq_loss = vq_loss.mean()
+        
+        x = self.projection_out(x)
+        x = x + self.norm_out(x)
         x = self.pos_encoder(x)
 
         x = self.transf_enc(x, src_key_padding_mask=attn_masks)

@@ -65,8 +65,9 @@ class AudioTextContrastive(nn.Module):
             
         x_audio = None
         x_audio_wide = None
+        vq_loss = None
         if audio_input != None:
-            x_audio_wide, _ = self.audio_encoder(**audio_input)
+            x_audio_wide, vq_loss = self.audio_encoder(**audio_input)
             x_audio_wide = F.normalize(self.audio_proj(x_audio_wide), dim=-1)
             x_audio = F.normalize(self.linear(x_audio_wide), dim=-1)
         
@@ -103,4 +104,5 @@ class AudioTextContrastive(nn.Module):
             "x_mult_text_wide": x_mult_text_wide,
             "x_mult_audio": x_mult_audio,
             "x_mult_audio_wide": x_mult_audio_wide,
+            "vq_loss": vq_loss,
         }
