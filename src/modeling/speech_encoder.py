@@ -102,7 +102,7 @@ class AudioEncoderMFCCHU(nn.Module):
         self.dropout = dropout
 
         self.pos_encoder = PositionalEncoding(emb_dim, dropout=pos_enc_drop)
-        self.projection_out = nn.Sequential(nn.Linear(raw_features_size, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
+        self.projection_out = nn.Linear(raw_features_size, emb_dim) #nn.Sequential(nn.Linear(raw_features_size, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
         self.norm_out = RMSNorm(emb_dim)
 
         self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*2, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout, activation=F.gelu)
