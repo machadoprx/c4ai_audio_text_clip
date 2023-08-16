@@ -76,10 +76,11 @@ class AudioEncoderMFCCHU(nn.Module):
                  emb_dim=768, 
                  n_layers=6, 
                  max_length=800,
-                 raw_features_size=53 * 3,
+                 raw_features_size_1=39,
+                 raw_features_size_2=120,
                  nheads=8, 
                  dropout=0.2,
-                 pos_enc_drop=0.0,
+                 pos_enc_drop=0.1,
                  codebook_dim=32,
                  num_quantizer=2,
                  threshold_ema_dead_code=2):
@@ -88,8 +89,8 @@ class AudioEncoderMFCCHU(nn.Module):
         self.vocab_size = vocab_size
         self.max_length = max_length
         
-        self.vq = GroupedResidualVQ(
-            dim = raw_features_size,
+        self.vq_mfcc = GroupedResidualVQ(
+            dim = raw_features_size_1,
             codebook_size = vocab_size,
             codebook_dim = codebook_dim,
             num_quantizers = num_quantizer,
@@ -98,12 +99,28 @@ class AudioEncoderMFCCHU(nn.Module):
             kmeans_iters = 10,
             groups=3,
         )
+
+        self.vq_harm = GroupedResidualVQ(
+            dim = raw_features_size_2,
+            codebook_size = vocab_size,
+            codebook_dim = codebook_dim,
+            num_quantizers = num_quantizer,
+            threshold_ema_dead_code = threshold_ema_dead_code,
+            kmeans_init = True,   # set to True
+            kmeans_iters = 10,
+            groups=3,
+        )
+
         self.emb_dim = emb_dim
         self.dropout = dropout
-
+        self.raw_features_size_1 = raw_features_size_1
+        self.raw_features_size_2 = raw_features_size_2
         self.pos_encoder = PositionalEncoding(emb_dim, dropout=pos_enc_drop)
-        self.projection_out = nn.Linear(raw_features_size, emb_dim) #nn.Sequential(nn.Linear(raw_features_size, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
-        self.norm_out = RMSNorm(emb_dim)
+        self.projection_out_1 = nn.Sequential(nn.Linear(raw_features_size_1, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
+        self.projection_out_2 = nn.Sequential(nn.Linear(raw_features_size_2, emb_dim), nn.GELU(), nn.Dropout(p=self.dropout), nn.Linear(emb_dim, emb_dim))
+
+        self.norm_out_1 = RMSNorm(emb_dim)
+        self.norm_out_2 = RMSNorm(emb_dim)
 
         self.transf_layer = nn.TransformerEncoderLayer(d_model=emb_dim, dim_feedforward=emb_dim*2, nhead=nheads, batch_first=True, norm_first=True, dropout=self.dropout, activation=F.gelu)
         self.transf_layer.norm1 = RMSNorm(emb_dim)
@@ -111,22 +128,23 @@ class AudioEncoderMFCCHU(nn.Module):
         self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=RMSNorm(emb_dim))
 
     def forward(self, features, attn_masks):
-        features_x = features[:, :, :128]
-        features_dx = features[:, :, 128:256]
-        features_ddx = features[:, :, 256:384]
+        mfcc = features[:, :, :self.raw_features_size_1]
+        harm = features[:, :, self.raw_features_size_1:]
 
-        features_x = features_x[:, :, :53]
-        features_dx = features_dx[:, :, :53]
-        features_ddx = features_ddx[:, :, :53]
+        x_mfcc, _, vq_loss_1 = self.vq_mfcc(mfcc)
+        vq_loss_1 = vq_loss_1.mean()
+        x_mfcc = self.projection_out_1(x_mfcc)
+        x_mfcc = x_mfcc + self.norm_out_1(x_mfcc)
+        x_mfcc = self.pos_encoder(x_mfcc)
 
-        features_final = torch.cat([features_x, features_dx, features_ddx], dim=-1)
-        #print
-        x, _, vq_loss = self.vq(features_final)
-        vq_loss = vq_loss.mean()
-        
-        x = self.projection_out(x)
-        x = x + self.norm_out(x)
-        x = self.pos_encoder(x)
+        x_harm, _, vq_loss_2 = self.vq_harm(harm)
+        vq_loss_2 = vq_loss_2.mean()
+        x_harm = self.projection_out_2(x_harm)
+        x_harm = x_harm + self.norm_out_2(x_harm)
+        x_harm = self.pos_encoder(x_harm)
+
+        x = (x_harm + x_mfcc) / 2.0
+        vq_loss = (vq_loss_1 + vq_loss_2) / 2.0
 
         x = self.transf_enc(x, src_key_padding_mask=attn_masks)
         

@@ -11,7 +11,7 @@ DEFAULT_FEATURES_PARAMS = {
     "n_fft": 4096,
     "sample_rate": 16000,
     "n_mels": 128,
-    "n_harmonics": 115,
+    "n_harmonics": 40,
 }
 
 class AudioEncoderMFCCHUTokenizer(object):
@@ -75,14 +75,20 @@ class AudioEncoderMFCCHUTokenizer(object):
         harmonic_energy = librosa.f0_harmonics(S, f0=f0, harmonics=harmonics, freqs=frequencies)
 
         with torch.no_grad():
-            feats = torch.cat([torch.from_numpy(mfcc), torch.from_numpy(harmonic_energy)], dim=0)
-            deltas = torchaudio.functional.compute_deltas(feats)
-            ddeltas = torchaudio.functional.compute_deltas(deltas)
+            mfcc = torch.from_numpy(mfcc)
+            deltas_mfcc = torchaudio.functional.compute_deltas(mfcc)
+            ddeltas_mfcc = torchaudio.functional.compute_deltas(deltas_mfcc)
+            feats_with_deltas_mfcc = torch.cat([mfcc, deltas_mfcc, ddeltas_mfcc], dim=0)
 
-            feats_with_deltas = torch.cat([feats, deltas, ddeltas], dim=0)
-            feats_with_deltas = feats_with_deltas.transpose(0, 1).contiguous()
+            harmonic_energy = torch.from_numpy(harmonic_energy)
+            deltas_harmonic = torchaudio.functional.compute_deltas(harmonic_energy)
+            ddeltas_harmonic = torchaudio.functional.compute_deltas(deltas_harmonic)
+            feats_with_deltas_harmonic = torch.cat([harmonic_energy, deltas_harmonic, ddeltas_harmonic], dim=0)
+
+            feats = torch.cat([feats_with_deltas_mfcc, feats_with_deltas_harmonic], dim=0)
+            feats = feats.transpose(0, 1).contiguous()
             
-            return feats_with_deltas
+            return feats
     
     def cache_dataset(self, paths: List[str], set_distribution: bool = True, n_jobs: int = 12):
         X = Parallel(n_jobs=n_jobs)(delayed(self.get_features)(x) for x in paths)

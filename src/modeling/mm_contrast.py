@@ -44,8 +44,6 @@ class AudioTextContrastive(nn.Module):
         
         self.alpha = nn.Sequential(
             nn.Dropout(p=rate),
-            nn.Linear(wide_proj, wide_proj), 
-            nn.GELU(),
             nn.Linear(wide_proj, 1)
         )
         
