@@ -26,7 +26,6 @@ class AudioTextContrastive(nn.Module):
         )
 
         self.text_proj = nn.Sequential(
-            self.text_encoder, 
             nn.Linear(in_features_text, hidden_size),  
             nn.GELU(), 
             nn.Linear(hidden_size, hidden_size),
@@ -54,18 +53,23 @@ class AudioTextContrastive(nn.Module):
         sentences, audio_input, multimodal = inp
         
         assert sentences != None or audio_input != None or multimodal != None
-        
+        self.audio_encoder.eval()
+        self.text_encoder.eval()
+
         x_text = None
         x_text_wide = None
         if sentences != None:
-            x_text_wide = F.normalize(self.text_proj(sentences), dim=-1)
+            with torch.no_grad():
+                x_text_wide = self.text_encoder(sentences)
+            x_text_wide = F.normalize(self.text_proj(x_text_wide), dim=-1)
             x_text = F.normalize(self.linear(x_text_wide), dim=-1)
             
         x_audio = None
         x_audio_wide = None
         vq_loss = None
         if audio_input != None:
-            x_audio_wide, vq_loss = self.audio_encoder(**audio_input)
+            with torch.no_grad():
+                x_audio_wide, vq_loss = self.audio_encoder(**audio_input)
             x_audio_wide = F.normalize(self.audio_proj(x_audio_wide), dim=-1)
             x_audio = F.normalize(self.linear(x_audio_wide), dim=-1)
         
@@ -76,9 +80,11 @@ class AudioTextContrastive(nn.Module):
         
         # Approximate text and audio, and make sum of vectors point to correct cls
         if multimodal != None:
-            x_mult_text = self.text_proj(multimodal['sentences'])
-            
-            x_mult_audio, _ = self.audio_encoder(**multimodal['audio_input'])
+            with torch.no_grad():
+                x_mult_text = self.text_encoder(multimodal['sentences'])
+            x_mult_text = self.text_proj(x_mult_text)
+            with torch.no_grad():
+                x_mult_audio, _ = self.audio_encoder(**multimodal['audio_input'])
             x_mult_audio = self.audio_proj(x_mult_audio)
             
             alphas = self.alpha(torch.cat([x_mult_text, x_mult_audio], dim=-1))

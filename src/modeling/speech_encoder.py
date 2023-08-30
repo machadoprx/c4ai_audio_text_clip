@@ -127,7 +127,7 @@ class AudioEncoderMFCCHU(nn.Module):
         self.transf_layer.norm2 = RMSNorm(emb_dim)
         self.transf_enc = nn.TransformerEncoder(self.transf_layer, num_layers=n_layers, norm=RMSNorm(emb_dim))
 
-    def forward(self, features, attn_masks):
+    def forward(self, features, attn_masks, paths=None):
         mfcc = features[:, :, :self.raw_features_size_1]
         harm = features[:, :, self.raw_features_size_1:]
 
